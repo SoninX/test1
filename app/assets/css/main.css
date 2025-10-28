@@ -1,0 +1,51 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@theme static {
+  --font-sans: "Poppins", sans-serif;  /* Default for entire app */
+  --font-inter: "Inter", sans-serif;   /* Custom font for login */
+  --color-green-50: #effdf5;
+  --color-green-100: #d9fbe8;
+  --color-green-200: #b3f5d1;
+  --color-green-300: #75edae;
+  --color-green-400: #00dc82;
+  --color-green-500: #00c16a;
+  --color-green-600: #00a155;
+  --color-green-700: #007f45;
+  --color-green-800: #016538;
+  --color-green-900: #0a5331;
+  --color-green-950: #052e16;
+  
+  --color-rose-50:  #F9EDEE;
+  --color-rose-100: #F2D4D7;
+  --color-rose-200: #E7AEB4;
+  --color-rose-300: #DB8890;
+  --color-rose-400: #CE6973;
+  --color-rose-500: #BD6068;
+  --color-rose-600: #A65056;
+  --color-rose-700: #843E44;
+  --color-rose-800: #633033;
+  --color-rose-900: #432122;
+  --color-rose-950: #2A1516;
+  
+  /* --color-background: #F1F2F5;
+  --color-auth-background: #E9EAED;
+  --color-accent: #627E90; */
+
+  /* Text colors */
+  /* --color-text-dark: #14191D;
+  --color-text-grey: #6A6C6E;
+  --color-text-light: #FAFCFE;
+  --color-text-bg-grey: #F1F2F5;
+  --color-text-bg-light: #FFFFFF; */
+
+  /* Context colors */
+  /* --color-primary: #BD6068;
+  --color-info: #00B5DF;
+  --color-success: #00897B;
+  --color-warning: #FCB21E;
+  --color-error: #EA1A65; */
+
+  --color-white: #FFFFFF;
+  --color-grey: #7F8083;
+}
