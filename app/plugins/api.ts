@@ -1,19 +1,34 @@
 import type { FetchContext } from "ofetch";
 
 export default defineNuxtPlugin(() => {
-  const token = localStorage.getItem("zebo-auth");;
+  // Removed token from here
   const config = useRuntimeConfig();
   const toast = useToast();
 
   // Common request interceptor
   const onRequest = ({ options }: FetchContext) => {
-    if (token) {
-      options.headers?.set("Authorization", `Bearer ${token}`);
+    // Moved token logic inside the function
+    const authData = localStorage.getItem("zebo-auth");
+    
+    if (authData) {
+      try {
+        // Parse the stored data to get the access token
+        const parsedData = JSON.parse(authData);
+        const token = parsedData.data.accessToken; // Get the actual token string
+        
+        if (token) {
+          options.headers = options.headers || new Headers();
+          options.headers.set("Authorization", `Bearer ${token}`);
+        }
+      } catch (e) {
+        console.error("Failed to parse auth token from localStorage", e);
+      }
     }
   };
 
   // Common response error handler
   const onResponseError = async ({ error, response }: FetchContext) => {
+    // ... (Your existing error handling logic remains the same)
     if (response && error) {
       switch (response.status) {
         case 401:
@@ -90,15 +105,6 @@ export default defineNuxtPlugin(() => {
     onRequest,
     onResponseError,
   });
-
-  // API v2 instance
-  //   const apiv2 = $fetch.create({
-  //     baseURL: config.public.apiV2Base as string,
-  //     onRequest,
-  //     onResponseError,
-  //     timeout: 15000,
-  //     retry: 2,
-  //   });
 
   return {
     provide: {

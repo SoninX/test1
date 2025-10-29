@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { FormSubmitEvent } from "@nuxt/ui";
-import { loginAction, LoginCredentialsSchema, type AuthResponse, type LoginCredentials } from "~/composables/api/auth";
+// Import the schema from the composable, but the store will handle the rest
+import { LoginCredentialsSchema, type LoginCredentials } from "~/composables/api/auth";
 import zeboMainLogo from "~/assets/images/logos/zebo-main-logo.png";
+import { useAuthStore } from "~/stores/auth"; // Import the new store
 
 definePageMeta({
   layout: "auth",
@@ -12,52 +14,64 @@ useSeoMeta({
   description: "Login to your account to continue",
 });
 
-const toast = useToast();
+// --- Type Guards for Error Handling ---
 
-// const fields = [
-//   {
-//     name: "email",
-//     type: "text" as const,
-//     label: "Email",
-//     placeholder: "Enter your email",
-//     required: true,
-//   },
-//   {
-//     name: "password",
-//     label: "Password",
-//     type: "password" as const,
-//     placeholder: "Enter your password",
-//   },
-//   {
-//     name: "remember",
-//     label: "Remember me",
-//     type: "checkbox" as const,
-//   },
-// ];
-
-// const providers = [
-//   {
-//     label: "Microsoft",
-//     icon: "i-simple-icons-microsoft",
-//     onClick: () => {
-//       toast.add({ title: "Microsoft", description: "Login with Microsoft" });
-//     },
-//   },
-// ];
-
-// const LoginCredentialsSchema = z.object({
-//   email: z.email("Invalid email"),
-//   password: z.string('Password is required').min(4, 'Must be at least 8 characters'),
-// });
-
-// export type LoginCredentials = z.output<typeof LoginCredentialsSchema>;
-
-interface JwtPayloadBase {
-  sub?: string
-  exp?: number
-  iat?: number
-  [key: string]: unknown
+// This checks for API errors that have a nested `data.message` (e.g., 422 Validation Error)
+interface FetchApiError {
+  data: {
+    message: string;
+  };
 }
+
+function isFetchApiError(error: unknown): error is FetchApiError {
+  // 1. Check if the top-level error is an object and has a 'data' property
+  if (typeof error !== "object" || error === null || !("data" in error)) {
+    return false;
+  }
+
+  // 2. Now that we know 'data' exists, extract it.
+  const data = (error as { data: unknown }).data;
+
+  // 3. Check if the nested 'data' property is *also* an object
+  //    and contains the 'message' property.
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "message" in data
+  );
+}
+
+// This checks for generic $fetch errors (like network errors) or standard JS Errors
+interface GenericError {
+    message: string;
+}
+
+function isGenericError(error: unknown): error is GenericError {
+    return (
+        typeof error === "object" &&
+        error !== null &&
+        "message" in error
+    );
+}
+
+// --- End Type Guards ---
+
+const toast = useToast();
+const router = useRouter(); // Use router for navigation
+const authStore = useAuthStore(); // Initialize the store
+
+// Get the login mutation from the store (like in the admin app)
+const { 
+  mutateAsync: userLogin, 
+  isLoading: authLoading,
+  error: loginError
+} = authStore.loginMutation();
+
+// Get the SSO login mutation from the store (like in the admin app)
+const { 
+  mutateAsync: ssoLogin, 
+  isLoading: isSsoLoading 
+} = authStore.ssoLoginMutation();
 
 const state = reactive({
   email: '',
@@ -70,83 +84,63 @@ const isEmailValid = computed(() => {
   return LoginCredentialsSchema.shape.email.safeParse(state.email).success
 })
 
-function parseJwt<T extends JwtPayloadBase = JwtPayloadBase>(
-  token: string
-): T | null {
+// Submit handler (uses store logic, like in the admin app)
+async function onSubmit(event: FormSubmitEvent<LoginCredentials>) {
   try {
-    const base64Url = token.split('.')[1]
-    if (!base64Url) return null
+    await userLogin(event.data); // Call the store's mutation
     
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    )
-    
-    return JSON.parse(jsonPayload) as T
-  } catch {
-    return null
+    // Handle success
+    toast.add({ title: 'Success', description: 'Login successful.', color: "primary" });
+    await router.push('/'); // Use router to navigate
+
+  } catch (err: unknown) {
+    console.error("Login error:", err);
+    let errorMessage = "Please check your credentials.";
+
+    if (isFetchApiError(err)) {
+      // Handles 422 Validation Errors, uses the specific API message
+      errorMessage = err.data.message;
+    } else if (isGenericError(err)) {
+      // Handles network errors or other $fetch errors
+      errorMessage = err.message;
+    }
+
+    toast.add({ 
+      title: 'Login failed', 
+      description: errorMessage, 
+      color: 'error' 
+    });
   }
 }
 
+// SSO handler (uses store logic, like in the admin app)
+async function signInWithSSO() {
+  try {
+    await ssoLogin(undefined); // Call the store's SSO mutation
 
-const { 
-  mutate: userLogin, 
-  error: isError,
-  isLoading: authLoading,
- } = useMutation({
-  mutation: (payload: LoginCredentials) => loginAction(payload),
-  onSuccess(data : AuthResponse) {
-  const tokenData = parseJwt(data.accessToken)
-  console.log('parsed token', tokenData);
-  
-  if (!tokenData){
-    console.log('token data not found'); 
-    return false
+    toast.add({
+      title: "Login successful!",
+      color: "primary",
+    });
+
+    await router.push("/"); // Navigate on success
+
+  } catch (err: unknown) {
+    console.error("SSO Login error:", err);
+    let errorMessage = "An unknown error occurred.";
+
+    // Check if it's a standard Error object
+    if (err instanceof Error) {
+      errorMessage = err.message;
+    }
+
+    toast.add({
+      title: "SSO Login failed",
+      description: errorMessage,
+      color: "error",
+    });
   }
-  localStorage.setItem('zebo-auth', JSON.stringify({
-    data,
-    exp: tokenData.exp,
-    iat: tokenData.iat,
-    user_id: tokenData.sub
-  }))
-  navigateTo('/', { replace: true })
-  toast.add({ title: 'Success', description: 'Login successful.', color: 'success' })
-  
-},
-
-  onError() {
-    toast.add({ title: 'Error', description: String(isError.value) || 'Failed to create todo', color: 'error' })
-    localStorage.removeItem('zebo-auth')
-  },
-
-})
-
-
-
-function onSubmit(event: FormSubmitEvent<LoginCredentials>) {
-  userLogin(event.data)
 }
-
-// Add the SSO function
-function signInWithSSO() {
-  toast.add({ title: "SSO", description: "Sign in with SSO" })
-}
-// function parseJwt (token:string) {
-//   const base64Url = token.split('.')[1] || ""
-//   const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
-//   const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function (c) {
-//     return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
-//   }).join(''))
-
-//   return JSON.parse(jsonPayload)
-// }
-
-// function onSubmit(payload: FormSubmitEvent<Schema>) {
-//   console.log("Submitted", payload);
-// }
 </script>
 
 <template>

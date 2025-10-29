@@ -4,7 +4,7 @@ export default defineNuxtConfig({
 
   ssr: false,
 
-  plugins: ["~/plugins/api"],
+  plugins: ["~/plugins/api", "~/plugins/msal.client"],
 
   modules: ["@nuxt/ui", "@nuxt/eslint", "@pinia/nuxt", "@pinia/colada-nuxt"],
 
@@ -15,6 +15,9 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBaseUrl: process.env.NUXT_PUBLIC_BASE_URL,
+      azureClientId: process.env.NUXT_PUBLIC_AZURE_CLIENT_ID,
+      azureTenantId: process.env.NUXT_PUBLIC_AZURE_TENANT_ID,
+      azureRedirectUri: process.env.NUXT_PUBLIC_AZURE_REDIRECT_URI
     },
   },
   colorMode: {
@@ -33,5 +36,13 @@ export default defineNuxtConfig({
     //   ]
     // },
   },
+  vite: {
+    server: {
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+        'Cross-Origin-Embedder-Policy': 'unsafe-none',
+      }
+    }
+  }
  
 });
