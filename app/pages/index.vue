@@ -1,5 +1,9 @@
 <script setup lang="ts">
 
+definePageMeta({
+  middleware: ['auth']
+})
+
 </script>
 <template>
     <div class="flex flex-col gap-4 mt-3">

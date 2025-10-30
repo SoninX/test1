@@ -1,5 +1,6 @@
 import { useMutation } from "@pinia/colada";
-import { loginAction, /* exchangeSsoToken, */ type SsoExchangePayload, type LoginCredentials, type AuthResponse } from "~/composables/api/auth";
+// Note: Assuming 'AuthResponse' from auth.ts is the Zod-transformed { accessToken, refreshToken, tokenType }
+import { loginAction, type SsoExchangePayload, exchangeSsoToken /* comment this for mocking fastapi response */, type LoginCredentials, type AuthResponse } from "~/composables/api/auth";
 import { navigateTo } from '#app';
 import type { AuthenticationResult, PublicClientApplication } from '@azure/msal-browser';
 import { BrowserAuthError } from '@azure/msal-browser';
@@ -11,117 +12,92 @@ declare module '#app' {
   }
 }
 
-// Helper: Define the shape of the data we store in localStorage
-interface AuthStorage {
-  data: AuthResponse;
-  exp: number;
-  iat: number;
-  user_id: string;
-}
-
-// Helper: JWT Parser (moved from your login.vue)
-interface JwtPayloadBase {
-  sub?: string
-  exp?: number
-  iat?: number
-  [key: string]: unknown
-}
-function parseJwt<T extends JwtPayloadBase = JwtPayloadBase>(
-  token: string
-): T | null {
-  try {
-    const base64Url = token.split('.')[1]
-    if (!base64Url) return null
-    
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    )
-    
-    return JSON.parse(jsonPayload) as T
-  } catch {
-    return null
-  }
-}
-
 // Define the MSAL login request scopes
 const msalLoginRequest = {
   scopes: ["User.Read", "email", "openid", "profile"],
 };
 
+// Define the expected shape of the response from *your* backend after login/SSO exchange
+// This is what we'll store in localStorage
+interface BackendAuthResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type?: string;
+  // Include other user details if your backend sends them
+  name?: string;
+  username?: string;
+}
+
+
 export const useAuthStore = defineStore("auth", () => {
-  
+
   // --- Getters ---
   const isAuthenticated = computed(() => {
-    if (import.meta.client) {
-      const authData = localStorage.getItem("zebo-auth");
-      if (!authData) return false;
-
-      try {
-        const parsedData: AuthStorage = JSON.parse(authData);
-        // Check if token exists and is not expired
-        return !!parsedData.data.accessToken && parsedData.exp * 1000 > Date.now();
-      } catch (e) {
-        return false;
-      }
+    // **MODIFIED: Check localStorage for the access token**
+    if (typeof window !== 'undefined') {
+      const accessToken = localStorage.getItem("accessToken");
+      return !!accessToken; // Returns true if the token string exists
     }
-    return false;
+    return false; // On server-side, assume not authenticated
   });
 
-  // --- Helper function to save session ---
-  // This is based on your login.vue's onSuccess handler
-  const saveSession = (response: AuthResponse) => {
-    const tokenData = parseJwt(response.accessToken);
-    if (!tokenData || !tokenData.exp || !tokenData.iat || !tokenData.sub) {
-      console.error('Failed to parse JWT or token data is missing');
-      return;
-    }
+  // --- Helper function to save session using localStorage ---
+  const saveSession = (response: BackendAuthResponse) => {
+    // **USING localStorage as requested**
+    if (typeof window !== "undefined") {
+      localStorage.setItem("accessToken", response.access_token);
+      localStorage.setItem("refreshToken", response.refresh_token);
 
-    const authData: AuthStorage = {
-      data: response,
-      exp: tokenData.exp,
-      iat: tokenData.iat,
-      user_id: tokenData.sub
-    };
-    
-    if (import.meta.client) {
-      localStorage.setItem("zebo-auth", JSON.stringify(authData));
+      // Optional: Store non-sensitive user info
+      if (response.name || response.username) {
+        const userInfo = {
+           name: response.name,
+           username: response.username
+        };
+        localStorage.setItem("zebo-user-info", JSON.stringify(userInfo));
+     }
     }
   };
 
   // --- Actions ---
-  
+
   // Regular email/password login
   const loginMutation = () => {
-    return useMutation<AuthResponse, LoginCredentials>({
+    return useMutation<BackendAuthResponse, LoginCredentials>({
       key: ["login"],
-      mutation: (credentials: LoginCredentials) => loginAction(credentials),
-      onSuccess: (response: AuthResponse) => {
+      mutation: async (credentials: LoginCredentials): Promise<BackendAuthResponse> => {
+        // This assumes loginAction returns the Zod-transformed { accessToken, ... }
+        const response: AuthResponse = await loginAction(credentials);
+        
+        // Map from Zod's camelCase output to the snake_case interface
+        return {
+          access_token: response.accessToken,
+          refresh_token: response.refreshToken,
+          token_type: response.tokenType
+        };
+      },
+      onSuccess: (response: BackendAuthResponse) => {
         saveSession(response);
       },
     });
   };
-  
+
   // New SSO login
   const ssoLoginMutation = () => {
     const { $msalInstance } = useNuxtApp();
     const toast = useToast();
 
-    return useMutation<AuthResponse, undefined>({
+    return useMutation<BackendAuthResponse, undefined>({
       key: ['ssoLogin'],
-      mutation: async () => {
+      mutation: async (): Promise<BackendAuthResponse> => {
         try {
           const msalResponse: AuthenticationResult = await $msalInstance.loginPopup(msalLoginRequest);
-          
+
           if (!msalResponse || !msalResponse.accessToken || !msalResponse.idToken || !msalResponse.account) {
             throw new Error("MSAL login failed or returned missing token/account data.");
           }
 
           const exchangePayload: SsoExchangePayload = {
-            access_token: msalResponse.accessToken,
             id_token: msalResponse.idToken,
             contact: {
               name: msalResponse.account.name || "Unknown User",
@@ -130,58 +106,73 @@ export const useAuthStore = defineStore("auth", () => {
           };
 
           // --- 4. MOCK BACKEND CALL (backend not ready) ---
-          // When your FastAPI /auth/sso-exchange endpoint is ready,
-          // you can uncomment the real call below and remove the mock.
           
-          // const fastapiResponse = await exchangeSsoToken(exchangePayload);
-          // return fastapiResponse;
-
-          // --- Mock Response (using the Zod-transformed AuthResponse type) ---
-          const mockFastApiResponse: AuthResponse = {
-            accessToken: "mock-fastapi-access-token",
-            refreshToken: "mock-fastapi-refresh-token",
-            tokenType: "bearer"
+          const fastapiResponse = await exchangeSsoToken(exchangePayload);
+          return {
+            access_token: fastapiResponse.accessToken,
+            refresh_token: fastapiResponse.refreshToken,
+            token_type: fastapiResponse.tokenType
           };
-          
-          // We need a *real* mock JWT to test the full flow
-          // This is a base64-encoded JWT with: { "sub": "mock-user-id", "exp": [1 hour from now], "iat": [now] }
-          const now = Math.floor(Date.now() / 1000);
-          const exp = now + 3600;
-          const mockPayload = btoa(JSON.stringify({ sub: "mock-sso-user", exp: exp, iat: now }));
-          mockFastApiResponse.accessToken = `mock-header.${mockPayload}.mock-signature`;
 
-          return mockFastApiResponse;
-          // --- End of Mock ---
+          // // --- Mock Response (matching BackendAuthResponse shape) ---
+          
+          // // **FIX: Use exchangePayload in the mock to resolve ESLint error**
+          // const mockFastApiResponse: BackendAuthResponse = {
+          //   access_token: "mock-fastapi-access-token-" + Date.now(),
+          //   refresh_token: "mock-fastapi-refresh-token-" + Date.now(),
+          //   token_type: "bearer",
+          //   // Add mock user details from the payload
+          //   name: exchangePayload.contact.name,
+          //   username: exchangePayload.contact.username
+          // };
+          
+          // console.log("Using Mock Backend Response:", mockFastApiResponse);
+          // return mockFastApiResponse;
+          // // --- End of Mock ---
 
         } catch (error) {
           console.error("SSO Mutation Error:", error);
-
           if (error instanceof BrowserAuthError && (error.errorCode.includes("popup_window_error") || error.errorCode.includes("user_cancelled"))) {
-             toast.add({ title: "Login cancelled", description: "The login popup was closed. Please try again.", color: "info" });
-             throw new Error("Login popup was closed. Please try again.");
+             toast.add({ title: "Login cancelled", description: "The login popup was closed.", color: "info" });
+             throw new Error("Login popup was closed."); // Re-throw specific error
           }
-
+          // Throw a generic error for other issues
           throw new Error("SSO login failed. Please try again.");
         }
       },
-      onSuccess: (response: AuthResponse) => {
+      onSuccess: (response: BackendAuthResponse) => {
         saveSession(response);
-        console.log("Backend response saved to localStorage:", response);
+        console.log("Mock backend response saved to localStorage:", response); // Updated log
       },
     });
   };
 
-  // Logout action
+  // Logout action - updated to clear localStorage
   const logout = async () => {
-    if (import.meta.client) {
-      localStorage.removeItem("zebo-auth");
+    // **MODIFIED: Clear localStorage**
+    if (import.meta.client) { // (same as typeof window !== 'undefined')
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("zebo-user-info");
     }
 
+    // Also clear cookies just in case they were set accidentally
+    const accessTokenCookie = useCookie("access_token");
+    const refreshTokenCookie = useCookie("refresh_token");
+    accessTokenCookie.value = null;
+    refreshTokenCookie.value = null;
+
+    // MSAL logout
     const { $msalInstance } = useNuxtApp();
     if ($msalInstance.getActiveAccount()) {
-      await $msalInstance.logoutPopup();
+      try {
+        await $msalInstance.logoutPopup();
+      } catch (e) {
+        console.error("MSAL logout error:", e);
+      }
     }
 
+    // Redirect to login
     await navigateTo('/auth/login');
   };
 

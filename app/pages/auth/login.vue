@@ -33,11 +33,12 @@ function isFetchApiError(error: unknown): error is FetchApiError {
   const data = (error as { data: unknown }).data;
 
   // 3. Check if the nested 'data' property is *also* an object
-  //    and contains the 'message' property.
+  //    and contains the 'message' property, AND that message is a string.
   return (
     typeof data === "object" &&
     data !== null &&
-    "message" in data
+    "message" in data &&
+    typeof (data as { message: unknown }).message === 'string' // <-- FIX 2 APPLIED
   );
 }
 
@@ -47,10 +48,12 @@ interface GenericError {
 }
 
 function isGenericError(error: unknown): error is GenericError {
+    // Check if it's an object, has a message, AND that message is a string.
     return (
         typeof error === "object" &&
         error !== null &&
-        "message" in error
+        "message" in error &&
+        typeof (error as { message: unknown }).message === 'string' // <-- FIX 1 APPLIED
     );
 }
 
@@ -64,7 +67,7 @@ const authStore = useAuthStore(); // Initialize the store
 const { 
   mutateAsync: userLogin, 
   isLoading: authLoading,
-  error: loginError
+  error: loginError // Note: 'error' from useMutation is reactive, but we handle errors in the catch block
 } = authStore.loginMutation();
 
 // Get the SSO login mutation from the store (like in the admin app)
@@ -126,11 +129,15 @@ async function signInWithSSO() {
     await router.push("/"); // Navigate on success
 
   } catch (err: unknown) {
+    // <-- FIX 3 APPLIED (Logic below mirrors onSubmit)
     console.error("SSO Login error:", err);
-    let errorMessage = "An unknown error occurred.";
+    let errorMessage = "An unknown error occurred during SSO login."; // More specific default
 
-    // Check if it's a standard Error object
-    if (err instanceof Error) {
+    if (isFetchApiError(err)) {
+      // Handles 422 errors from your backend token exchange
+      errorMessage = err.data.message;
+    } else if (isGenericError(err)) {
+      // Handles MSAL errors (e.g., "Login popup was closed") or network errors
       errorMessage = err.message;
     }
 
@@ -235,6 +242,7 @@ async function signInWithSSO() {
         size="lg"
         label="Login"
         block
+        :error="loginError"
         :loading="authLoading"
         >
         Login
@@ -242,7 +250,7 @@ async function signInWithSSO() {
 
       <div class="relative my-6">
         <div class="absolute inset-0 flex items-center">
-          <div class="w-full border-t border-gray-300"></div>
+          <div class="w-full border-t border-gray-300" />
         </div>
         <div class="relative flex justify-center text-sm">
           <span class="px-2 bg-white text-gray-500">Or</span>
@@ -256,6 +264,7 @@ async function signInWithSSO() {
         label= "Microsoft SSO"
         icon= "i-simple-icons-microsoft"
         block
+        :loading="isSsoLoading"
         @click="signInWithSSO"
       >
         <!-- Signin with SSO -->

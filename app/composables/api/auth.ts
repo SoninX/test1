@@ -1,7 +1,4 @@
-
 import { z } from 'zod';
-
-// or z.infer (no difference here since no transform)
 
 const AuthResponseSchema = z.object({
   access_token: z.string(),
@@ -43,25 +40,26 @@ const loginAction = async (credentials: LoginCredentials): Promise<AuthResponse>
   return data;
 };
 // Interface for the MSAL token payload
-export interface SsoExchangePayload {
-  access_token: string;
-  id_token: string;
-  contact: {
-    name: string;
-    username: string;
-  }
-}
+const SsoExchangePayloadSchema = z.object({
+  id_token: z.string().min(1, "ID token is required"),
+  contact: z.object({
+    name: z.string().min(1, "Name is required"),
+    username: z.string().min(1, "Username is required"),
+  }),
+});
+export type SsoExchangePayload = z.output<typeof SsoExchangePayloadSchema>;
 
 // Function to exchange the MSAL token for your backend token
 // Note: This assumes your client-side backend's SSO endpoint also accepts JSON.
 // If it expects form data like loginAction, we'll need to adjust.
 const exchangeSsoToken = async (payload: SsoExchangePayload): Promise<AuthResponse> => {
+  const validatedPayload = SsoExchangePayloadSchema.parse(payload);
   const { $apiv1 } = useNuxtApp();
   
   // We use $apiv1 to match your project's structure
-  const response = await $apiv1<AuthResponseInput>("/auth/sso-exchange", {
+  const response = await $apiv1<AuthResponseInput>("/auth/azure/sso-exchange/token", {
     method: "POST",
-    body: payload,
+    body: validatedPayload,
   });
   const data = AuthResponseSchema.parse(response);
   return data;
