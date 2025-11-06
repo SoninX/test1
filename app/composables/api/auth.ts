@@ -1,5 +1,5 @@
 import { z } from 'zod';
-
+import type { BackendAuthResponse } from "~/stores/auth";
 // Schema for the response *from*  backend
 const AuthResponseSchema = z.object({
   access_token: z.string(),
@@ -13,6 +13,10 @@ const AuthResponseSchema = z.object({
 
 type AuthResponseInput = z.input<typeof AuthResponseSchema>;
 export type AuthResponse = z.output<typeof AuthResponseSchema>; // Export AuthResponse
+
+export interface RefreshTokenPayload{
+  refresh_token:string;
+}
 
 // Schema for regular login credentials
 export const LoginCredentialsSchema = z.object({ // Export LoginCredentialsSchema
@@ -65,4 +69,13 @@ export const exchangeSsoToken = async (payload: SsoExchangePayload): Promise<Aut
   });
   const data = AuthResponseSchema.parse(response);
   return data;
+};
+
+export const refreshUserToken = (payload: RefreshTokenPayload): Promise<BackendAuthResponse> => {
+  const { $apiv1 } = useNuxtApp();
+  
+  return $apiv1("/refresh", {
+    method: "POST",
+    body: payload,
+  });
 };

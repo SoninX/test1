@@ -1,5 +1,5 @@
 // app/plugins/api.ts (Updated for Project 1 using cookie-based auth)
-
+import { useAuthStore } from '~/stores/auth';
 import type { FetchContext } from "ofetch"; // Keep original FetchContext type
 
 export default defineNuxtPlugin(() => {
@@ -11,48 +11,79 @@ export default defineNuxtPlugin(() => {
   // Common request interceptor - Reads token from Cookie
   const onRequest = ({ options }: FetchContext) => {
     // Use Nuxt's useCookie composable to get the token
-    const accessToken = useCookie("access_token");
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const accessToken = localStorage.getItem("accessToken");
 
-    if (accessToken.value) { // Check if the cookie has a value
+    if (accessToken) { // Check if the cookie has a value
       // Ensure options.headers exists and is a Headers object or assignable
       if (!options.headers) {
         options.headers = new Headers();
       }
       // Use Headers object methods for type safety
       const headers = new Headers(options.headers);
-      headers.set("Authorization", `Bearer ${accessToken.value}`);
+      headers.set("Authorization", `Bearer ${accessToken}`);
       options.headers = headers; // Assign the modified Headers object back
     }
   };
 
   // Common response error handler - Adjusted for cookie clearing and routing
-  const onResponseError = async ({ error, response }: FetchContext) => {
+  const onResponseError = async ({ error, response, request, options }: FetchContext) => {
     // Handle cases where there is a response object (HTTP errors)
+    const authStore = useAuthStore();
+    if (import.meta.server) {
+      // On the server, just re-throw the error
+      throw error ?? new Error('API request failed on server');
+    }
     if (response) {
        // Extract backend error message if available, otherwise use default
-       // Use optional chaining (?.) and nullish coalescing (??) for safety
        const backendErrorMessage = response._data?.message ?? response._data?.detail ?? error?.message ?? 'An unknown error occurred';
 
       switch (response.status) {
         case 401: {
-          console.error("Unauthorized request or token expired:", backendErrorMessage);
-          // Clear authentication cookies
-          const accessToken = useCookie("access_token");
-          const refreshToken = useCookie("refresh_token");
-          accessToken.value = null;
-          refreshToken.value = null;
+          if (request.toString().includes('/auth/refresh')) {
+            console.error("Refresh token is invalid or expired. Logging out.");
+            await authStore.logout();
+            return; // Stop here
+          }
+          
+          // 2. Get the refreshToken mutation
+          const { mutateAsync: refreshToken } = authStore.refreshTokenMutation();
 
+          try {
+            // 3. Attempt to refresh the token
+            // This will automatically be skipped if isRefreshing is true
+            console.log('401 Error. Attempting to refresh token...');
+            await refreshToken();
+            
+            // 4. Refresh was successful, retry the original request
+            console.log('Token refresh successful. Retrying original request.');
+            
+            // We use $fetch directly to retry, as it will re-run all interceptors,
+            // including onRequest to get the *new* token.
+            // We pass 'options' which includes the body, method, etc.
+            return $fetch(request, options);
 
-          toast.add({
-            title: "Session Expired",
-            description: "Please log in again.",
-            color: "error",
-            icon: "i-lucide-alert-circle",
-          });
-
-          await router.push("/auth/login");
-          return;
+          } catch (refreshError: any) {
+            // 5. Refresh failed
+            
+            // Don't log out if it was just a concurrent attempt
+            if (!refreshError.message.includes('Refresh already in progress')) {
+              console.error('Failed to refresh token. Logging out.', refreshError);
+              toast.add({
+                title: "Session Expired",
+                description: "Please login again",
+                color: "error",
+              });
+              await authStore.logout();
+            } else {
+               console.warn('Token refresh skipped (concurrent attempt).');
+               return $fetch(request, options);
+            }
+          }
         }
+          break;
         case 403:
           console.error("Forbidden:", backendErrorMessage);
           toast.add({
@@ -77,7 +108,6 @@ export default defineNuxtPlugin(() => {
           console.error("Validation Error:", backendErrorMessage);
           toast.add({
             title: "Validation Error",
-            // You might want more specific parsing if backend returns detailed validation errors
             description: backendErrorMessage,
             color: "error",
             icon: "i-lucide-list-x"
@@ -123,8 +153,9 @@ export default defineNuxtPlugin(() => {
           });
     }
 
-    // Optionally re-throw the error if you want calling code (like useMutation) to catch it
-    // throw error ?? new Error('API request failed');
+    // **THIS IS THE FIX**
+    // Re-throw the error so the calling code (like useMutation) can catch it
+    throw error ?? new Error('API request failed');
   };
 
   // API v1 instance (assuming this uses the base API URL)

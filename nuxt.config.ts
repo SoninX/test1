@@ -11,6 +11,8 @@ export default defineNuxtConfig({
   css: ["~/assets/css/main.css"],
 
   compatibilityDate: "2025-07-16",
+  
+  spaLoadingTemplate: false,
 
   runtimeConfig: {
     public: {
@@ -19,10 +21,6 @@ export default defineNuxtConfig({
       azureTenantId: process.env.NUXT_PUBLIC_AZURE_TENANT_ID,
       azureRedirectUri: process.env.NUXT_PUBLIC_AZURE_REDIRECT_URI
     },
-  },
-  colorMode: {
-    preference: 'light', // Force light mode
-    fallback: 'light',   // Fallback to light if preference fails
   },
   ui: {
     // theme: {
@@ -39,7 +37,7 @@ export default defineNuxtConfig({
   vite: {
     server: {
       headers: {
-        'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+        // 'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
         'Cross-Origin-Embedder-Policy': 'unsafe-none',
       }
     }

@@ -1,5 +1,5 @@
 import { useMutation } from "@pinia/colada";
-import { loginAction, exchangeSsoToken, type SsoExchangePayload, type LoginCredentials, type AuthResponse } from "~/composables/api/auth";
+import { loginAction, exchangeSsoToken,refreshUserToken, type SsoExchangePayload, type LoginCredentials, type AuthResponse, type RefreshTokenPayload } from "~/composables/api/auth";
 import { navigateTo } from '#app';
 import type { AuthenticationResult, PublicClientApplication } from '@azure/msal-browser';
 import { BrowserAuthError } from '@azure/msal-browser';
@@ -17,42 +17,131 @@ const msalLoginRequest = {
 };
 
 // Define the expected shape of the response from *your* backen
-interface BackendAuthResponse {
+export interface BackendAuthResponse {
   access_token: string;
   refresh_token: string;
-  token_type?: string;
-  // User details might be included by the backend *after* validating the id_token
-  name?: string;
-  username?: string;
+  token_type: string;
 }
 
+const decodeJwtPayload = (token: string): any | null => {
+  try {
+    const payloadBase64Url = token.split('.')[1];
+    if (!payloadBase64Url) {
+      throw new Error("Invalid JWT: Missing payload");
+    }
+
+    let payloadBase64 = payloadBase64Url.replace(/-/g, '+').replace(/_/g, '/');
+    
+    const padding = payloadBase64.length % 4;
+    if (padding) {
+      payloadBase64 += '='.repeat(4 - padding);
+    }
+
+    const decodedData = atob(payloadBase64);
+
+    const utf8String = decodeURIComponent(
+      Array.prototype.map.call(decodedData, (c) => {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join('')
+    );
+    
+    return JSON.parse(utf8String);
+
+  } catch (error) {
+    console.error("Error decoding JWT payload:", error);
+    return null; 
+  }
+};
 
 export const useAuthStore = defineStore("auth", () => {
+  const isRefreshing = ref(false);
 
-  // --- Getters ( uses localStorage) ---
-  const isAuthenticated = computed(() => {
-    if (typeof window !== 'undefined') {
-      const accessToken = localStorage.getItem("accessToken");
-      return !!accessToken;
+  function scheduleRefresh() {
+    // Get the auth store (or just call functions directly)
+    const tokenExpiry = localStorage.getItem('tokenExpiry');
+    if (!tokenExpiry) {
+      return; // No expiry, do nothing
     }
-    return false;
-  });
+
+    const expiryTimeMs = parseInt(tokenExpiry, 10) * 1000;
+    const currentTimeMs = Date.now();
+    const bufferMs = 5 * 60 * 1000; // 5 minute buffer
+    const delay = (expiryTimeMs - currentTimeMs) - bufferMs;
+
+    if (delay > 0) {
+      setTimeout(async () => {
+        console.log('Proactive refresh timer triggered.');
+        
+        // Get the mutation from within the store
+        const { mutateAsync: refreshTokenAsync } = refreshTokenMutation();
+
+        try {
+          // --- Call 'refreshTokenAsync' ---
+          await refreshTokenAsync(); // This will now throw an error if it fails
+          
+          console.log('Proactive refresh successful.');
+          // After a successful refresh, schedule the *next* refresh
+          scheduleRefresh(); 
+
+        } catch (error: any) {
+          // --- Move all error logic into the catch block ---
+          if (error.message.includes('Refresh already in progress')) {
+            console.warn('Proactive refresh skipped: Refresh already in progress.');
+          } else {
+            console.error('Proactive refresh failed:', error);
+            logout();
+          }
+        }
+      }, delay);
+    } else {
+      console.warn('Token is already expired or within buffer. Skipping proactive refresh.');
+    }
+  }
 
   // --- Helper function to save session using localStorage ---
   const saveSession = (response: BackendAuthResponse) => {
     if (typeof window !== "undefined") {
       localStorage.setItem("accessToken", response.access_token);
       localStorage.setItem("refreshToken", response.refresh_token);
-      if (response.name || response.username) {
-        const userInfo = { name: response.name, username: response.username };
+      localStorage.setItem("type",response.token_type);
+
+      try {
+    const decodedPayload = decodeJwtPayload(response.access_token);
+    console.log(decodedPayload)
+    if (decodedPayload) {
+      const userInfo = {
+        name: decodedPayload.name,
+        username: decodedPayload.username || decodedPayload.email,
+        role: decodedPayload.roles,
+      };
+        
+        // 4. Save the decoded user info as a JSON string
         localStorage.setItem("zebo-user-info", JSON.stringify(userInfo));
-     } else {
-       // Clear old user info if not present in the new response
-       localStorage.removeItem("zebo-user-info");
-     }
+
+        if (decodedPayload.exp) {
+            localStorage.setItem("tokenExpiry", decodedPayload.exp);
+          } else {
+            localStorage.removeItem("tokenExpiry");
+          }
+
+      } else {
+        console.warn("Could not decode JWT payload. Clearing local user info.");
+        localStorage.removeItem("zebo-user-info");
+        localStorage.removeItem("tokenExpiry");
+      }
+    } catch (error) {
+      console.error("Failed to parse token or save session:", error);
+      localStorage.removeItem("zebo-user-info");
+      localStorage.removeItem("tokenExpiry");
     }
+  }
   };
 
+    // --- Getters ( uses localStorage) ---
+  const isAuthenticated = computed(() => {
+    const accessToken = (typeof window !== 'undefined') ? localStorage.getItem("accessToken") : null;
+    return !!accessToken;
+  });
   // --- Actions ---
 
   // Regular email/password login (remains the same)
@@ -69,6 +158,7 @@ export const useAuthStore = defineStore("auth", () => {
       },
       onSuccess: (response: BackendAuthResponse) => {
         saveSession(response);
+        scheduleRefresh();
       },
     });
   };
@@ -139,22 +229,55 @@ export const useAuthStore = defineStore("auth", () => {
       onSuccess: (response: BackendAuthResponse) => {
         saveSession(response);
         console.log("Backend response saved to localStorage:", response);
+        scheduleRefresh();
       },
     });
   };
 
+  const refreshTokenMutation = () => {
+    return useMutation<BackendAuthResponse, void>({
+      key: ['refreshToken'],
+      // We use a custom mutation function to handle the isRefreshing state
+      mutation: async (): Promise<BackendAuthResponse> => {
+        // 1. Check if a refresh is already in progress
+        if (isRefreshing.value) {
+          // If so, throw an error to stop this mutation
+          throw new Error("Refresh already in progress.");
+        }
+
+        // 2. Set the refreshing state
+        isRefreshing.value = true;
+
+        // 3. Get the refresh token from storage
+        const refreshToken = localStorage.getItem("refreshToken");
+        if (!refreshToken) {
+          throw new Error("No refresh token available.");
+        }
+
+        // 4. Call the API
+        const payload: RefreshTokenPayload = { refresh_token: refreshToken };
+        return await refreshUserToken(payload);
+      },
+      onSuccess: (response: BackendAuthResponse) => {
+        // 5. On success, save the new session (new tokens and new expiry)
+        saveSession(response);
+      },
+      // 6. onSettled runs after onSuccess OR onError
+      onSettled: () => {
+        // 7. Always reset the refreshing state
+        isRefreshing.value = false;
+      },
+    });
+  };
   // Logout action (remains the same - clears localStorage)
   const logout = async () => {
     if (import.meta.client) {
       localStorage.removeItem("accessToken");
       localStorage.removeItem("refreshToken");
       localStorage.removeItem("zebo-user-info");
+      localStorage.removeItem("tokenExpiry");
+      localStorage.removeItem("tokenType");
     }
-
-    const accessTokenCookie = useCookie("access_token");
-    const refreshTokenCookie = useCookie("refresh_token");
-    accessTokenCookie.value = null;
-    refreshTokenCookie.value = null;
 
     const { $msalInstance } = useNuxtApp();
     if ($msalInstance.getActiveAccount()) {
@@ -167,10 +290,19 @@ export const useAuthStore = defineStore("auth", () => {
     await navigateTo('/auth/login');
   };
 
+  const initSessionWatcher = () => {
+    if (import.meta.client) {
+      scheduleRefresh();
+    }
+  }
+
   return {
     loginMutation,
     ssoLoginMutation,
+    refreshTokenMutation,
     logout,
+    initSessionWatcher,
     isAuthenticated,
+    isRefreshing,
   };
 });
